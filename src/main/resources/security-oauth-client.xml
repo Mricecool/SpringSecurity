@@ -1,0 +1,201 @@
+<!--OAuth认证-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:beans="http://www.springframework.org/schema/beans"
+       xmlns:oauth2="http://www.springframework.org/schema/security/oauth2"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xmlns:mvc="http://www.springframework.org/schema/mvc"
+       xmlns:jpa="http://www.springframework.org/schema/data/jpa"
+       xmlns:tx="http://www.springframework.org/schema/tx"
+       xmlns:security="http://www.springframework.org/schema/security"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-4.1.xsd
+      http://www.springframework.org/schema/security http://www.springframework.org/schema/security/spring-security-4.1.xsd
+      http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+      http://www.springframework.org/schema/mvc http://www.springframework.org/schema/mvc/spring-mvc.xsd
+      http://www.springframework.org/schema/data/jpa http://www.springframework.org/schema/data/jpa/spring-jpa.xsd
+      http://www.springframework.org/schema/tx http://www.springframework.org/schema/tx/spring-tx.xsd
+      http://www.springframework.org/schema/security/oauth2 http://www.springframework.org/schema/security/spring-security-oauth2-1.0.xsd"
+       default-lazy-init="true">
+
+    <!-- 开启注解 -->
+    <mvc:annotation-driven/>
+    <mvc:default-servlet-handler/>
+    <context:annotation-config />
+    <!--指明 controller 所在包，并扫描其中的注解-->
+    <context:component-scan base-package="com.security"/>
+
+    <!--获取token的访问地址-->
+    <security:http pattern="/oauth/token" create-session="stateless"
+                   authentication-manager-ref="oauth2AuthenticationManager">
+        <security:intercept-url pattern="/oauth/token" access="permitAll" />     <!--  可以访问的角色名称，如果需要拦截，需要实现UserDetails接口，实现getAuthorities（）方法-->
+        <security:anonymous enabled="false" />
+        <security:http-basic entry-point-ref="oauth2AuthenticationEntryPoint" />
+        <security:custom-filter ref="clientCredentialsTokenEndpointFilter"
+                                before="BASIC_AUTH_FILTER" />
+        <security:access-denied-handler ref="oauth2AccessDeniedHandler" />
+    </security:http>
+
+    <!--受限制的接口，没有token无法打开-->
+    <security:http pattern="/safe" create-session="never"
+                   entry-point-ref="oauth2AuthenticationEntryPoint"
+                   authentication-manager-ref="oauth2AuthenticationManager">
+        <security:intercept-url pattern="/safe" access="hasRole('USER')" />     <!--  可以访问的角色名称，如果需要拦截，需要实现UserDetails接口，实现getAuthorities（）方法-->
+        <security:anonymous enabled="false" />
+        <security:custom-filter ref="mobileResourceServer" before="PRE_AUTH_FILTER" />
+        <security:access-denied-handler ref="oauth2AccessDeniedHandler" />
+    </security:http>
+
+    <!--登录的访问地址，如果无需登录，可不写-->
+    <security:http auto-config="true" authentication-manager-ref="userServiceManager">
+        <!-- 配置HeaderWriterFilter，为response添加安全header信息-->
+        <security:headers disabled="true"/>
+        <security:csrf disabled="true"/>
+        <security:form-login login-page="/index" default-target-url="/success"
+                             authentication-failure-url="/index?error=true" />
+        <security:intercept-url pattern="/index" access="permitAll"/>
+        <security:intercept-url pattern="/success" access="hasRole('USER')"/>
+        <security:intercept-url pattern="/admin" access="hasRole('ADMIN')"/>
+        <security:logout invalidate-session="true" logout-url="/logout" logout-success-url="/index"/>
+    </security:http>
+
+    <!--token在服务器存储的方式    InMemoryTokenStore ：保存在内存     ；JdbcTokenStore : 保存在数据库中 -->
+    <beans:bean id="tokenStore"
+                class="org.springframework.security.oauth2.provider.token.store.InMemoryTokenStore" />
+
+    <!--默认的Token服务-->
+    <!--<beans:bean id="tokenServices"
+        class="org.springframework.security.oauth2.provider.token.DefaultTokenServices">-->     <!--令牌服务的实体-->
+
+    <!-- 自己重写的Token服务类 -->
+    <beans:bean id="tokenServices"
+                class="com.security.service.MyTokenService">
+        <beans:property name="tokenStore" ref="tokenStore" />
+        <!--允许刷新token ， 默认不允许-->
+        <beans:property name="supportRefreshToken" value="true" />
+    </beans:bean>
+
+    <!--用于登录验证的自定义服务（访问数据库）-->
+    <security:authentication-manager id="userServiceManager">
+        <security:authentication-provider user-service-ref="myUserService">
+        </security:authentication-provider>
+    </security:authentication-manager>
+
+    <!--获取客户端id,秘钥和grant类型的服务（注释的服务中将客户端id和秘钥写死，实际应该从数据库读取）-->
+    <!--<oauth2:client-details-service id="clientDetailsService">-->
+    <!--<oauth2:client client-id="user"-->
+    <!--authorized-grant-types="password,authorization_code,refresh_token,implicit"-->
+    <!--secret="1" scope="read,write,trust"/>-->
+    <!--</oauth2:client-details-service>-->
+    <!--class="org.springframework.security.oauth2.provider.client.ClientDetailsUserDetailsService"-->
+
+    <!--用于客户端id和秘钥验证的自定义服务（访问数据库）-->
+    <security:authentication-manager id="oauth2AuthenticationManager">
+        <security:authentication-provider user-service-ref="oauth2ClientDetailsUserService" />
+    </security:authentication-manager>
+
+    <!--oauth2 的server所能支持的请求类型-->
+    <!--mService为自定义的客户端信息获取类ClientDetailsService-->
+    <oauth2:authorization-server
+            client-details-service-ref="mService" token-services-ref="tokenServices"
+            user-approval-handler-ref="oauthUserApprovalHandler">
+        <oauth2:authorization-code />
+        <oauth2:implicit />
+        <oauth2:refresh-token />
+        <oauth2:client-credentials />
+        <oauth2:password />
+    </oauth2:authorization-server>
+
+    <!--处理访问成功-->
+    <beans:bean id="oauth2AuthenticationEntryPoint"
+                class="org.springframework.security.oauth2.provider.error.OAuth2AuthenticationEntryPoint" />
+    <!--处理访问拒绝-->
+    <beans:bean id="oauth2AccessDeniedHandler"
+                class="org.springframework.security.oauth2.provider.error.OAuth2AccessDeniedHandler" />
+    <!--处理认证点-->
+    <beans:bean id="oauthUserApprovalHandler"
+                class="org.springframework.security.oauth2.provider.approval.DefaultUserApprovalHandler" />
+    <!--处理访问控制-->
+    <beans:bean id="oauth2AccessDecisionManager"
+                class="org.springframework.security.access.vote.UnanimousBased">
+        <beans:constructor-arg>
+            <beans:list>
+                <beans:bean
+                        class="org.springframework.security.oauth2.provider.vote.ScopeVoter" />
+                <beans:bean class="org.springframework.security.access.vote.RoleVoter" />
+                <beans:bean
+                        class="org.springframework.security.access.vote.AuthenticatedVoter" />
+            </beans:list>
+        </beans:constructor-arg>
+    </beans:bean>
+
+    <!--指定spring要保护的资源，如果没有这个，访问控制的时候会说没有Authentication object：-->
+    <oauth2:resource-server id="mobileResourceServer"
+                            resource-id="mobile-resource" token-services-ref="tokenServices" />
+
+    <beans:bean id="clientCredentialsTokenEndpointFilter"
+                class="org.springframework.security.oauth2.provider.client.ClientCredentialsTokenEndpointFilter">
+        <beans:property name="authenticationManager" ref="oauth2AuthenticationManager" />
+    </beans:bean>
+
+    <security:global-method-security pre-post-annotations="enabled" />
+
+    <!-- 表示JPA Repository所在的包 -->
+    <jpa:repositories base-package="com.security.repository"/>
+
+    <bean id="entityManagerFactory" class="org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean">
+        <property name="persistenceUnitName" value="defaultPersistenceUnit"/>
+        <property name="packagesToScan" value="com.security.model" />
+        <property name="jpaVendorAdapter">
+            <bean class="org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter"/>
+        </property>
+        <property name="jpaProperties">
+            <props>
+                <prop key="hibernate.connection.driver_class">com.mysql.jdbc.Driver</prop>
+                <prop key="hibernate.connection.url">jdbc:mysql://localhost:3306/authority?useSSL=false</prop>
+                <prop key="hibernate.connection.username">root</prop>
+                <prop key="hibernate.connection.password">root</prop>
+                <prop key="hibernate.show_sql">true</prop>
+                <prop key="hibernate.connection.useUnicode">true</prop>
+                <prop key="hibernate.connection.characterEncoding">UTF-8</prop>
+                <prop key="hibernate.format_sql">true</prop>
+                <prop key="hibernate.use_sql_comments">true</prop>
+                <prop key="hibernate.hbm2ddl.auto">update</prop>
+                <prop key="hibernate.connection.autoReconnect">true</prop>
+                <prop key="hibernate.dialect">org.hibernate.dialect.MySQL5Dialect</prop>
+                <prop key="connection.autoReconnectForPools">true</prop>
+                <prop key="connection.is-connection-validation-required">true</prop>
+
+                <prop key="hibernate.c3p0.validate">true</prop>
+                <prop key="hibernate.connection.provider_class">org.hibernate.service.jdbc.connections.internal.C3P0ConnectionProvider</prop>
+                <prop key="hibernate.c3p0.min_size">5</prop>
+                <prop key="hibernate.c3p0.max_size">600</prop>
+                <prop key="hibernate.c3p0.timeout">1800</prop>
+                <prop key="hibernate.c3p0.max_statements">50</prop>
+                <prop key="hibernate.c3p0.preferredTestQuery">SELECT 1;</prop>
+                <prop key="hibernate.c3p0.testConnectionOnCheckout">true</prop>
+                <prop key="hibernate.c3p0.idle_test_period">3000</prop>
+            </props>
+        </property>
+    </bean>
+
+    <!-- 事务管理 -->
+    <bean id="transactionManager" class="org.springframework.orm.jpa.JpaTransactionManager">
+        <property name="entityManagerFactory" ref="entityManagerFactory"/>
+    </bean>
+
+    <!-- 开启事务管理注解 -->
+    <tx:annotation-driven transaction-manager="transactionManager"/>
+
+    <bean id="myUserService" class="com.security.service.MyUserService">
+    </bean>
+
+    <bean id="mService" class="com.security.service.ClientDetailsService">
+    </bean>
+
+    <!--构造器参数为自定义的ClientDetailsService-->
+    <beans:bean id="oauth2ClientDetailsUserService"
+                class="org.springframework.security.oauth2.provider.client.ClientDetailsUserDetailsService">
+        <beans:constructor-arg ref="mService" />
+    </beans:bean>
+
+</beans>
